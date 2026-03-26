@@ -14,10 +14,6 @@ class RedditAPIError(RedditMonitorError):
     pass
 
 
-class ConfigurationError(RedditMonitorError):
-    pass
-
-
 class GeminiAPIError(RedditMonitorError):
     pass
 

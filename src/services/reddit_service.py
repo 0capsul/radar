@@ -75,7 +75,7 @@ class RedditService:
             return body[:MAX_BODY_LENGTH] + "..."
         return body
 
-    def _build_post(self, post_data: dict, matched_keywords: list[str]) -> RedditPost:
+    def _build_post(self, post_data: dict) -> RedditPost:
         """Convert Reddit JSON post data into a RedditPost."""
         raw_body = post_data.get("selftext", "") or ""
         return RedditPost(
@@ -88,7 +88,6 @@ class RedditService:
             created_utc=datetime.fromtimestamp(post_data["created_utc"]).isoformat(),
             score=post_data.get("score", 0),
             num_comments=post_data.get("num_comments", 0),
-            matched_keywords=matched_keywords,
         )
 
     def _minutes_since(self, utc_timestamp: float) -> float:
@@ -128,7 +127,7 @@ class RedditService:
             if self.is_already_processed(post["id"]):
                 continue
 
-            new_posts.append(self._build_post(post, []))
+            new_posts.append(self._build_post(post))
             self._processed_posts.add(post["id"])
 
         return new_posts
@@ -165,6 +164,3 @@ class RedditService:
             raise RedditAPIError(
                 f"Failed to get posts from r/{subreddit}", str(e)
             ) from e
-
-    async def close(self):
-        """No-op, clients are created and closed per request."""

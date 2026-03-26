@@ -11,7 +11,6 @@ class RedditPost(BaseModel):
     created_utc: str
     score: int
     num_comments: int
-    matched_keywords: list[str] = Field(default_factory=list)
 
     @field_validator("subreddit")
     @classmethod
