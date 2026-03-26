@@ -122,22 +122,6 @@ class MonitoringConfig(BaseSettings):
         return v
 
 
-class RateLimitConfig(BaseSettings):
-    """Rate limiting configuration for API calls."""
-
-    model_config = _IGNORE_EXTRA
-
-    reddit_requests_per_minute: int = Field(default=95)
-    reddit_batch_size: int = Field(default=15)
-    reddit_delay_between_batches: float = Field(default=2.0)
-
-    gemini_requests_per_minute: int = Field(default=14)
-    gemini_delay_between_requests: float = Field(default=4.5)
-
-    max_posts_to_qualify_per_run: int = Field(default=20)
-    prioritize_high_score_posts: bool = Field(default=True)
-
-
 class Settings(BaseSettings):
     """Main application settings."""
 
@@ -147,7 +131,6 @@ class Settings(BaseSettings):
     webhook: WebhookConfig = Field(default_factory=WebhookConfig)
     gemini: GeminiConfig = Field(default_factory=GeminiConfig)
     monitoring: MonitoringConfig = Field(default_factory=MonitoringConfig)
-    rate_limits: RateLimitConfig = Field(default_factory=RateLimitConfig)
 
 
 _settings: Settings | None = None

@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""
-Interpreter Reddit Monitor - GitHub Actions Script
-
-Monitors Reddit for professional interpreters who could benefit from
-real-time transcription and translation during live calls.
-"""
+"""Monitors Reddit for lead-qualifying posts, scores them with an LLM, notifies via Telegram."""
 
 import asyncio
 import os
@@ -12,24 +7,20 @@ import sys
 import warnings
 from datetime import UTC, datetime
 
-# Suppress unclosed client session warnings from asyncpraw
 warnings.filterwarnings("ignore", message=".*unclosed.*", category=ResourceWarning)
 warnings.filterwarnings("ignore", message=".*Unclosed.*")
 
-# Add src to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
 
 from core.config import get_settings
 from core.exceptions import GeminiServiceError, RedditAPIError, WebhookServiceError
 from core.models import QualifiedPost, RedditPost
 from services.gemini_service import GeminiService
-from services.rate_limiter import rate_limiter
+from services.rate_limiter import delay_between_subreddits
 from services.reddit_service import RedditService
 from services.webhook_service import WebhookService
 
-SUBREDDIT_DELAY_SECONDS = 5
 TITLE_PREVIEW_LENGTH = 60
-TITLE_SHORT_PREVIEW_LENGTH = 40
 MAX_PAIN_POINTS_SHOWN = 3
 VERY_STRONG_THRESHOLD = 9
 STRONG_THRESHOLD = 7
@@ -83,53 +74,26 @@ def _format_notification(post: QualifiedPost) -> str:
 Struggling with: {esc(pain_points)}"""
 
 
-async def _fetch_posts_from_subreddit(
-    reddit_service: RedditService, subreddit: str, monitoring_config
-) -> list[RedditPost]:
-    try:
-        posts = await reddit_service.get_recent_posts(
-            subreddit=subreddit,
-            limit=monitoring_config.max_posts_per_subreddit,
-            max_age_minutes=monitoring_config.post_age_limit_minutes,
-        )
-        print(f"Found {len(posts)} relevant posts in r/{subreddit}")
-        return posts
-    except Exception as e:
-        print(f"Error processing r/{subreddit}: {e}")
-        return []
-
-
 async def _fetch_all_posts(
-    reddit_service: RedditService, monitoring_config, rate_limits
+    reddit_service: RedditService, monitoring_config
 ) -> list[RedditPost]:
-    batches = [
-        monitoring_config.subreddits[i : i + rate_limits.reddit_batch_size]
-        for i in range(
-            0, len(monitoring_config.subreddits), rate_limits.reddit_batch_size
-        )
-    ]
-
     all_posts: list[RedditPost] = []
 
-    for batch_idx, subreddit_batch in enumerate(batches):
-        if batch_idx > 0:
-            await rate_limiter.wait_between_batches(
-                rate_limits.reddit_delay_between_batches
-            )
-
-        print(
-            f"Processing batch {batch_idx + 1}/{len(batches)}: {len(subreddit_batch)} subreddits"
-        )
-
-        for sub_idx, subreddit in enumerate(subreddit_batch):
-            if sub_idx > 0:
-                await asyncio.sleep(SUBREDDIT_DELAY_SECONDS)
-            posts = await _fetch_posts_from_subreddit(
-                reddit_service, subreddit, monitoring_config
+    for idx, subreddit in enumerate(monitoring_config.subreddits):
+        if idx > 0:
+            await delay_between_subreddits()
+        try:
+            posts = await reddit_service.get_recent_posts(
+                subreddit=subreddit,
+                limit=monitoring_config.max_posts_per_subreddit,
+                max_age_minutes=monitoring_config.post_age_limit_minutes,
             )
             all_posts.extend(posts)
+            print(f"r/{subreddit}: {len(posts)} posts")
+        except Exception as e:
+            print(f"r/{subreddit}: error - {e}")
 
-    print(f"Total posts found: {len(all_posts)}")
+    print(f"Total: {len(all_posts)} posts")
     return all_posts
 
 
@@ -149,13 +113,11 @@ async def _qualify_post(
 
     if meets_confidence and meets_relevance:
         print(
-            f"Post qualified (confidence: {qualification.confidence}, relevance: {qualification.relevance_score})"
+            f"  qualified ({qualification.confidence}/{qualification.relevance_score})"
         )
         return QualifiedPost(**post.model_dump(), qualification=qualification)
 
-    print(
-        f"Post not qualified (confidence: {qualification.confidence}, relevance: {qualification.relevance_score})"
-    )
+    print(f"  skipped ({qualification.confidence}/{qualification.relevance_score})")
     return None
 
 
@@ -166,18 +128,15 @@ async def _qualify_all_posts(
 
     for idx, post in enumerate(posts):
         try:
-            print(
-                f"Analyzing ({idx + 1}/{len(posts)}): {post.title[:TITLE_PREVIEW_LENGTH]}..."
-            )
+            print(f"[{idx + 1}/{len(posts)}] {post.title[:TITLE_PREVIEW_LENGTH]}")
             result = await _qualify_post(gemini_service, post, monitoring_config)
             if result:
                 qualified.append(result)
         except GeminiServiceError as e:
-            print(f"AI processing error for post {post.post_id}: {e}")
+            print(f"  gemini error: {e}")
         except Exception as e:
-            print(f"Unexpected error processing post {post.post_id}: {e}")
+            print(f"  error: {e}")
 
-    print(f"Qualified {len(qualified)} posts for Interpreter")
     return qualified
 
 
@@ -186,8 +145,8 @@ async def process_posts() -> list[QualifiedPost]:
     settings = get_settings()
     monitoring_config = settings.monitoring
 
-    print(f"Starting Interpreter monitoring at {datetime.now(UTC)}")
-    print(f"Monitoring {len(monitoring_config.subreddits)} subreddits")
+    print(f"Started at {datetime.now(UTC):%H:%M:%S UTC}")
+    print(f"Subreddits: {len(monitoring_config.subreddits)}")
 
     reddit_service = RedditService(
         settings.reddit, processed_posts_file=PROCESSED_POSTS_FILE
@@ -195,22 +154,17 @@ async def process_posts() -> list[QualifiedPost]:
     gemini_service = GeminiService(settings.gemini)
 
     try:
-        all_posts = await _fetch_all_posts(
-            reddit_service, monitoring_config, settings.rate_limits
-        )
+        all_posts = await _fetch_all_posts(reddit_service, monitoring_config)
         return await _qualify_all_posts(gemini_service, all_posts, monitoring_config)
     except RedditAPIError as e:
-        print(f"Reddit monitoring error: {e}")
-        return []
-    except Exception as e:
-        print(f"Unexpected error: {e}")
+        print(f"Reddit error: {e}")
         return []
 
 
 async def send_notifications(qualified_posts: list[QualifiedPost]) -> None:
     """Send Telegram notifications for each qualified post."""
     if not qualified_posts:
-        print("No qualified posts to notify about")
+        print("No leads found")
         return
 
     settings = get_settings()
@@ -220,46 +174,22 @@ async def send_notifications(qualified_posts: list[QualifiedPost]) -> None:
         try:
             message = _format_notification(post)
             await webhook_service.send_notification(message)
-            print(
-                f"Sent notification for: {post.title[:TITLE_SHORT_PREVIEW_LENGTH]}..."
-            )
+            print(f"Notified: {post.title[:50]}")
         except WebhookServiceError as e:
-            print(f"Failed to send notification: {e}")
+            print(f"Notification failed: {e}")
         except Exception as e:
-            print(f"Unexpected notification error: {e}")
-
-
-def _print_summary(qualified_posts: list[QualifiedPost]) -> None:
-    reddit_usage = rate_limiter.get_current_usage("reddit")
-    print("\nInterpreter Monitoring Summary:")
-    print(f"{len(qualified_posts)} qualified opportunities found")
-    print(f"Reddit API: {reddit_usage['calls_last_minute']}/95 requests used")
-    print(f"Completed at {datetime.now(UTC)}")
-    print("Next check in 1 hour")
+            print(f"Notification error: {e}")
 
 
 async def main():
     """Run the full monitoring pipeline: fetch, qualify, notify."""
-    print("Interpreter Reddit Monitor Starting...")
-
     try:
         qualified_posts = await process_posts()
         await send_notifications(qualified_posts)
-        _print_summary(qualified_posts)
-    except RedditAPIError as e:
-        print(f"\nReddit API Error: {e}")
-        print("The monitoring run failed due to Reddit authentication issues.")
-        sys.exit(1)
+        print(f"\nDone. {len(qualified_posts)} leads. {datetime.now(UTC):%H:%M:%S UTC}")
     except Exception as e:
-        print(f"Fatal error in Interpreter monitor: {e}")
+        print(f"Fatal: {e}")
         sys.exit(1)
-    finally:
-        try:
-            import gc
-
-            gc.collect()
-        except Exception:
-            pass
 
 
 if __name__ == "__main__":
