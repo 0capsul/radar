@@ -1,73 +1,74 @@
-# Reddit Lead Monitor
+# radar
 
-Finds business leads on Reddit for Interpreter — a real-time transcription and translation tool for over-the-phone interpreters.
-
-The system monitors relevant subreddits, uses AI to qualify posts, and sends Telegram notifications when it finds professional interpreters who could benefit from the product.
+Monitors Reddit for lead-qualifying posts, scores them with an LLM, and pushes notifications to Telegram.
 
 ## How it works
 
-The monitor checks Reddit posts from interpretation communities hourly. When someone posts about needing transcription tools, struggling with note-taking during calls, or dealing with cognitive overload while interpreting, AI analyzes the post and scores its relevance.
+A scheduled GitHub Actions job fetches recent posts from a list of subreddits using Reddit's public JSON API. Each post goes through an LLM (Gemini) that scores it on two axes: confidence and relevance (both 1-10). Posts that clear the threshold get formatted and sent to a Telegram channel.
 
-High-scoring posts get sent to Telegram with analysis and pain point identification.
+No Reddit API keys needed. The public `.json` endpoints work with just a User-Agent header.
 
 ## Setup
 
-Create these environment variables:
-
-```bash
-# Reddit API
-REDDIT_CLIENT_ID=your_client_id
-REDDIT_CLIENT_SECRET=your_secret
-REDDIT_USERNAME=your_username
-REDDIT_PASSWORD=your_password
-
-# AI qualification
-GEMINI_API_KEY=your_gemini_key
-
-# Notifications
-TELEGRAM_WEBHOOK_URL=your_webhook_url
-```
-
-## Installation
-
-Install dependencies with uv:
 ```bash
 uv sync
 ```
 
-Run locally:
+Two environment variables are required:
+
+```
+GEMINI_API_KEY=your_key
+TELEGRAM_WEBHOOK_URL=https://api.telegram.org/bot<token>/sendMessage?chat_id=<id>
+```
+
+Supports multiple Gemini keys as `GEMINI_API_KEY1`, `GEMINI_API_KEY2`, etc. The service picks a random key per request and retries with a different one on failure.
+
+## Running
+
 ```bash
-python monitor.py
+uv run python monitor.py
 ```
 
-Runs automatically on GitHub Actions every hour in production.
+In production, a GitHub Actions cron triggers this hourly.
 
-## Architecture
+## Project structure
 
 ```
+monitor.py              Entry point. Fetches, qualifies, notifies.
 src/
-|-- core/           # Configuration and models
-|-- services/       # Reddit, AI, and notification services
-
-monitor.py          # Main entry point
+  core/
+    config.py            Pydantic settings, loaded from env vars
+    models.py            RedditPost, PostQualification, QualifiedPost
+    exceptions.py        Custom exception hierarchy
+  services/
+    reddit_service.py    Fetches posts via Reddit public JSON
+    gemini_service.py    LLM qualification with multi-key retry
+    webhook_service.py   Sends formatted messages to Telegram
+    rate_limiter.py      Per-service call frequency tracking
 ```
 
-## What it monitors
+## LLM qualification
 
-Subreddits related to interpretation, medical interpreting, legal interpreting, remote work, and language services. Looks for posts about:
+The Gemini service wraps each post in a system prompt that defines scoring criteria. The response is structured JSON with confidence, relevance, reasons, and pain points.
 
-- Note-taking struggles during live interpretation
-- Cognitive overload and interpreter burnout
-- Speech-to-text and transcription needs
-- Real-time captioning and translation tools
-- OPI, VRI, and remote interpreting challenges
+Retry mechanism: picks a random API key from the pool, fires the request, retries with a different key on 429/403/timeout. No backoff, no max retries. Works because the key pool is large enough that something is always available.
 
-## AI qualification
+## Rate limiting
 
-Posts get scored 1-10 on confidence and relevance using Google Gemini. The AI understands Interpreter's product (real-time transcription, quick lookup, term mappings, domain modes) and scores based on how well the poster's pain points match what Interpreter solves.
+Reddit: 95 requests/minute with configurable batch sizes and delays between batches.
+Gemini: 14 requests/minute per key, distributed across the key pool.
+Both tracked with a sliding 60-second window.
 
-Only posts scoring 5+ on both confidence and relevance generate notifications.
+## Notifications
 
-## Performance
+Qualified posts are formatted as Telegram MarkdownV2 messages with the lead signal strength, a link to the post, the LLM's one-line reason, and extracted pain points. All special characters are escaped before sending.
 
-Processes 20-50 posts per run in 2-3 minutes. Rate limited to respect API constraints. Tracks processed posts to avoid duplicates.
+## Dev tools
+
+```bash
+uv run ruff check --fix .    # lint and auto-fix
+uv run ruff format .         # format
+uv run ty check              # type check
+```
+
+Ruff rules: E, F, I, UP, B, SIM, RUF. Type checking targets Python 3.12.
