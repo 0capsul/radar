@@ -1,0 +1,39 @@
+name: Interpreter Monitor
+
+on:
+  schedule:
+    # Run every hour
+    - cron: '0 * * * *'
+  workflow_dispatch:  # Allow manual triggering
+  push:
+    branches: [ main ]  # Also run on pushes to keep repository active
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python 3.12
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v6
+
+    - name: Install dependencies
+      run: uv sync --frozen --no-dev
+
+    - name: Run Reddit monitoring
+      env:
+        TELEGRAM_WEBHOOK_URL: ${{ secrets.TELEGRAM_WEBHOOK_URL }}
+        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      run: uv run python monitor.py
+
+    - name: Log completion
+      if: always()
+      run: |
+        echo "Monitoring cycle completed at $(date)"
