@@ -30,6 +30,7 @@ processed_posts.txt
 *.log
 
 # IDE
+.vscode/
 .idea/
 *.swp
 *.swo
@@ -47,7 +48,3 @@ Thumbs.db
 skills-lock.json
 pyrightconfig.json
 bash.exe.stackdump
-branch_structure.json
-temp_auto_push.bat
-temp_interactive_push.bat
-.gitignore
